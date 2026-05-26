@@ -42,7 +42,19 @@ const upload = multer({
 });
 
 app.use(express.json({ limit: "20mb" }));
-app.use(express.static(path.join(__dirname, "public")));
+
+// 静的ファイルを charset=utf-8 で配信
+app.use(express.static(path.join(__dirname, "public"), {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith(".html")) {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+    } else if (filePath.endsWith(".js")) {
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+    } else if (filePath.endsWith(".css")) {
+      res.setHeader("Content-Type", "text/css; charset=utf-8");
+    }
+  }
+}));
 app.use("/uploads", express.static(uploadDir));
 
 // ─── ストレージ API ───────────────────────────────────────────────
