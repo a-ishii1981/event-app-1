@@ -7,6 +7,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.set('view engine', 'ejs');
+app.use((req, res, next) => { res.setHeader('Content-Type', 'text/html; charset=utf-8'); next(); });
 app.set('views', './views');
 app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
