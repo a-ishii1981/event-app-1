@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8"><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>イベント記録アプリ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=DM+Mono:wght@500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="home-header">
+      <div class="home-logo">??</div>
+      <h1 class="home-title">イベント記録</h1>
+      <p class="home-sub">販売・改善記録アプリ</p>
+    </header>
+    <main class="home-main">
+      <section class="section">
+        <h2 class="section-title">ワークスペースを選ぶ</h2>
+        <div class="workspace-list">
+          <% workspaces.forEach(ws => { %>
+          <a href="/workspaces/<%= ws.id %>/events" class="workspace-card workspace-<%= ws.type %>">
+            <div class="ws-icon"><%= ws.type === 'business' ? '??' : '??' %></div>
+            <div class="ws-info">
+              <div class="ws-name"><%= ws.name %></div>
+              <div class="ws-type"><%= ws.type === 'business' ? '自分の事業' : 'バイト' %></div>
+            </div>
+            <div class="ws-arrow">?</div>
+          </a>
+          <% }) %>
+        </div>
+      </section>
+      <section class="section">
+        <h2 class="section-title">新しいワークスペース</h2>
+        <form action="/workspaces" method="POST" class="form-card">
+          <div class="form-group">
+            <label class="form-label">名前</label>
+            <input type="text" name="name" class="form-input" placeholder="例：ハンドメイドマルシェ" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">種別</label>
+            <div class="radio-group">
+              <label class="radio-label">
+                <input type="radio" name="type" value="business" checked>
+                <span>?? 自分の事業</span>
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="type" value="part_time">
+                <span>?? バイト</span>
+              </label>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-secondary">追加する</button>
+        </form>
+      </section>
+    </main>
+  </div>
+  <script src="/js/app.js"></script>
+</body>
+</html>
+
+
