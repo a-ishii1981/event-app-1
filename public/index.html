@@ -54,12 +54,13 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useRef } = React;
 
     // ─── ストレージキー ──────────────────────────────────────────
     const EVENTS_KEY  = "ev_events_v1";
     const RECORDS_KEY = "ev_records_v1";
     const WS_KEY      = "ev_workspace_v1";
+    const VENUE_KEY   = "ev_venue_v1";
 
     // ─── ストレージ ──────────────────────────────────────────────
     async function storageSave(k, v) {
@@ -114,37 +115,19 @@
       lines.push(fmtDate(dateStr));
       lines.push("");
       lines.push("■ 売上記録");
-      const products = rec?.products || [];
-      const validProducts = products.filter(p => p.name || p.count || p.price);
-      if (validProducts.length === 0) {
-        lines.push("（記録なし）");
-      } else {
-        validProducts.forEach(p => {
-          const cnt = parseInt(p.count)||0, prc = parseInt(p.price)||0;
-          lines.push(`${p.name||"（商品名なし）"}　${cnt}個 × ${fmtYen(prc)} = ${fmtYen(cnt*prc)}`);
-        });
-      }
+      const products = (rec?.products || []).filter(p => p.name || p.count || p.price);
+      if (products.length === 0) { lines.push("（記録なし）"); }
+      else { products.forEach(p => { const cnt=parseInt(p.count)||0, prc=parseInt(p.price)||0; lines.push(`${p.name||"（商品名なし）"}　${cnt}個 × ${fmtYen(prc)} = ${fmtYen(cnt*prc)}`); }); }
       lines.push(`売上合計: ${fmtYen(calcSales(rec))}`);
       lines.push("");
       lines.push("■ 経費");
-      const expenses = rec?.expenses || [];
-      const validExpenses = expenses.filter(e => e.name || e.amount);
-      if (validExpenses.length === 0) {
-        lines.push("（なし）");
-      } else {
-        validExpenses.forEach(e => lines.push(`${e.name||"（経費名なし）"}　${fmtYen(parseInt(e.amount)||0)}`));
-      }
+      const expenses = (rec?.expenses || []).filter(e => e.name || e.amount);
+      if (expenses.length === 0) { lines.push("（なし）"); }
+      else { expenses.forEach(e => lines.push(`${e.name||"（経費名なし）"}　${fmtYen(parseInt(e.amount)||0)}`)); }
       lines.push(`経費合計: ${fmtYen(calcExpenses(rec))}`);
-      const profit = calcProfit(rec);
-      lines.push(`【利益】${fmtYen(profit)}`);
+      lines.push(`【利益】${fmtYen(calcProfit(rec))}`);
       lines.push("");
-      const memos = [
-        ["customerReactions",   "■ お客様の反応"],
-        ["frequentQuestions",   "■ よく聞かれた質問"],
-        ["displayImprovements", "■ POP・売場改善の反応"],
-        ["nextImprovements",    "■ 次回改善点"],
-      ];
-      memos.forEach(([field, label]) => {
+      [["customerReactions","■ お客様の反応"],["frequentQuestions","■ よく聞かれた質問"],["displayImprovements","■ POP・売場改善の反応"],["nextImprovements","■ 次回改善点"]].forEach(([field,label])=>{
         if (rec?.[field]) { lines.push(label); lines.push(rec[field]); lines.push(""); }
       });
       return lines.join("\n");
@@ -152,24 +135,25 @@
 
     // ─── 共通スタイル ────────────────────────────────────────────
     const IS = {
-      background: "rgba(255,255,255,0.08)",
-      border: "1px solid rgba(138,101,255,0.35)",
-      borderRadius: 8,
-      padding: "8px 12px",
-      color: "#fff",
-      fontSize: 14,
-      boxSizing: "border-box",
-      outline: "none",
-      width: "100%",
-      fontFamily: "'Noto Sans JP', sans-serif",
+      background:"rgba(255,255,255,0.08)", border:"1px solid rgba(138,101,255,0.35)",
+      borderRadius:8, padding:"8px 12px", color:"#fff", fontSize:14,
+      boxSizing:"border-box", outline:"none", width:"100%",
+      fontFamily:"'Noto Sans JP', sans-serif",
     };
-    const CARD = {
-      background: "rgba(255,255,255,0.04)",
-      borderRadius: 16,
-      padding: "16px 18px",
-      marginBottom: 14,
-      border: "1px solid rgba(255,255,255,0.07)",
-    };
+    const CARD = { background:"rgba(255,255,255,0.04)", borderRadius:16, padding:"16px 18px", marginBottom:14, border:"1px solid rgba(255,255,255,0.07)" };
+
+    // ─── ファイルアップロードAPI ─────────────────────────────────
+    async function uploadFile(file) {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/upload", { method:"POST", body:fd });
+      if (!res.ok) throw new Error("アップロード失敗");
+      return res.json(); // { url, filename, size }
+    }
+    async function deleteFile(url) {
+      const filename = url.split("/").pop();
+      try { await fetch(`/api/upload/${encodeURIComponent(filename)}`, { method:"DELETE" }); } catch {}
+    }
 
     const TABS = ["記録", "イベント", "日報", "集計"];
 
@@ -179,41 +163,29 @@
       const endOfWeek = new Date(todayDate);
       endOfWeek.setDate(endOfWeek.getDate() + (6 - todayDate.getDay()));
       const days = [];
-      for (let i = 34; i >= 0; i--) {
-        const d = new Date(endOfWeek);
-        d.setDate(d.getDate() - i);
-        days.push(localDateStr(d));
-      }
+      for (let i = 34; i >= 0; i--) { const d = new Date(endOfWeek); d.setDate(d.getDate() - i); days.push(localDateStr(d)); }
       const parts = selectedDate.split("-");
       const [manualY, setManualY] = useState(parts[0]);
       const [manualM, setManualM] = useState(parts[1]);
       const [manualD, setManualD] = useState(parts[2]);
-      useEffect(() => {
-        const p = selectedDate.split("-");
-        setManualY(p[0]); setManualM(p[1]); setManualD(p[2]);
-      }, [selectedDate]);
+      useEffect(() => { const p=selectedDate.split("-"); setManualY(p[0]); setManualM(p[1]); setManualD(p[2]); }, [selectedDate]);
       function applyManual() {
-        const s = `${manualY}-${manualM.padStart(2,"0")}-${manualD.padStart(2,"0")}`;
-        if (/^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s))) setSelectedDate(s);
+        const s=`${manualY}-${manualM.padStart(2,"0")}-${manualD.padStart(2,"0")}`;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)&&!isNaN(new Date(s))) setSelectedDate(s);
       }
-      const weeks = [];
-      for (let w = 0; w < 5; w++) weeks.push(days.slice(w*7, w*7+7));
+      const weeks = []; for (let w=0;w<5;w++) weeks.push(days.slice(w*7,w*7+7));
       const DOW = ["日","月","火","水","木","金","土"];
       return (
         <div style={{...CARD,marginBottom:14}}>
           <div style={{fontSize:11,color:"#9b8fff",letterSpacing:2,marginBottom:12,fontWeight:700}}>📅 記録日</div>
           <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:12}}>
-            <input value={manualY} onChange={e=>setManualY(e.target.value)} onBlur={applyManual} maxLength={4}
-              style={{...IS,width:64,textAlign:"center",padding:"8px 4px",fontSize:13}} />
+            <input value={manualY} onChange={e=>setManualY(e.target.value)} onBlur={applyManual} maxLength={4} style={{...IS,width:64,textAlign:"center",padding:"8px 4px",fontSize:13}} />
             <span style={{color:"#9b8fff",fontSize:12}}>年</span>
-            <input value={manualM} onChange={e=>setManualM(e.target.value)} onBlur={applyManual} maxLength={2}
-              style={{...IS,width:44,textAlign:"center",padding:"8px 4px",fontSize:13}} />
+            <input value={manualM} onChange={e=>setManualM(e.target.value)} onBlur={applyManual} maxLength={2} style={{...IS,width:44,textAlign:"center",padding:"8px 4px",fontSize:13}} />
             <span style={{color:"#9b8fff",fontSize:12}}>月</span>
-            <input value={manualD} onChange={e=>setManualD(e.target.value)} onBlur={applyManual} maxLength={2}
-              style={{...IS,width:44,textAlign:"center",padding:"8px 4px",fontSize:13}} />
+            <input value={manualD} onChange={e=>setManualD(e.target.value)} onBlur={applyManual} maxLength={2} style={{...IS,width:44,textAlign:"center",padding:"8px 4px",fontSize:13}} />
             <span style={{color:"#9b8fff",fontSize:12}}>日</span>
-            <button onClick={applyManual}
-              style={{background:"rgba(138,101,255,0.5)",border:"none",color:"#fff",borderRadius:8,padding:"8px 12px",fontSize:13,cursor:"pointer",fontWeight:700}}>→</button>
+            <button onClick={applyManual} style={{background:"rgba(138,101,255,0.5)",border:"none",color:"#fff",borderRadius:8,padding:"8px 12px",fontSize:13,cursor:"pointer",fontWeight:700}}>→</button>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3,marginBottom:4}}>
             {DOW.map((d,i)=><div key={d} style={{textAlign:"center",fontSize:10,color:i===0?"#f87171":i===6?"#60a5fa":"#9b8fff",fontWeight:700,padding:"2px 0"}}>{d}</div>)}
@@ -221,18 +193,12 @@
           {weeks.map((week,wi)=>(
             <div key={wi} style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3,marginBottom:3}}>
               {week.map(ds=>{
-                const rk = selectedEventId ? `${selectedEventId}_${ds}` : null;
-                const hasRec = rk && records[rk] && (calcSales(records[rk])>0 || records[rk].customerReactions);
-                const isToday = ds===today, isSel = ds===selectedDate;
-                const dow = new Date(ds+"T00:00:00").getDay();
+                const rk=selectedEventId?`${selectedEventId}_${ds}`:null;
+                const hasRec=rk&&records[rk]&&calcSales(records[rk])>0;
+                const isToday=ds===today, isSel=ds===selectedDate;
+                const dow=new Date(ds+"T00:00:00").getDay();
                 return (
-                  <button key={ds} onClick={()=>setSelectedDate(ds)} style={{
-                    padding:"6px 2px",borderRadius:8,border:"none",cursor:"pointer",position:"relative",
-                    background:isSel?"rgba(138,101,255,0.85)":hasRec?"rgba(251,146,60,0.2)":"rgba(255,255,255,0.05)",
-                    color:isSel?"#fff":isToday?"#fbbf24":dow===0?"#f87171":dow===6?"#60a5fa":"#d0c8ff",
-                    fontSize:12,fontWeight:isToday||isSel?700:400,
-                    outline:isToday&&!isSel?"1px solid rgba(251,191,36,0.5)":"none",
-                  }}>
+                  <button key={ds} onClick={()=>setSelectedDate(ds)} style={{padding:"6px 2px",borderRadius:8,border:"none",cursor:"pointer",position:"relative",background:isSel?"rgba(138,101,255,0.85)":hasRec?"rgba(251,146,60,0.2)":"rgba(255,255,255,0.05)",color:isSel?"#fff":isToday?"#fbbf24":dow===0?"#f87171":dow===6?"#60a5fa":"#d0c8ff",fontSize:12,fontWeight:isToday||isSel?700:400,outline:isToday&&!isSel?"1px solid rgba(251,191,36,0.5)":"none"}}>
                     {new Date(ds+"T00:00:00").getDate()}
                     {hasRec&&!isSel&&<div style={{width:4,height:4,borderRadius:"50%",background:"#fb923c",position:"absolute",bottom:2,left:"50%",transform:"translateX(-50%)"}}/>}
                   </button>
@@ -240,44 +206,33 @@
               })}
             </div>
           ))}
-          <div style={{marginTop:8,padding:"8px 12px",background:"rgba(138,101,255,0.15)",borderRadius:10,fontSize:13,fontWeight:700,textAlign:"center",color:"#c4b5ff"}}>
-            {fmtDateShort(selectedDate)}
-          </div>
+          <div style={{marginTop:8,padding:"8px 12px",background:"rgba(138,101,255,0.15)",borderRadius:10,fontSize:13,fontWeight:700,textAlign:"center",color:"#c4b5ff"}}>{fmtDateShort(selectedDate)}</div>
         </div>
       );
     }
 
     // ─── RecordTab ────────────────────────────────────────────────
     function RecordTab({ events, records, setRecords, selectedEventId, setSelectedEventId, selectedDate, setSelectedDate, today, setTab, workspace }) {
-      const selectedEvent = events.find(e=>e.id===selectedEventId) || null;
-      const recKey = selectedEventId ? `${selectedEventId}_${selectedDate}` : null;
-      const rec = recKey ? (records[recKey] || {}) : {};
+      const selectedEvent = events.find(e=>e.id===selectedEventId)||null;
+      const recKey = selectedEventId?`${selectedEventId}_${selectedDate}`:null;
+      const rec = recKey?(records[recKey]||{}):{}
       function updateRec(patch) {
         if (!recKey) return;
         setRecords(prev=>({...prev,[recKey]:{...(prev[recKey]||{}),...patch}}));
       }
-      const products = rec.products || [{ name:"", count:"", price:"" }];
-      const expenses = rec.expenses || [];
-      const totalSales = calcSales(rec);
-      const totalExpenses = calcExpenses(rec);
-      const profit = totalSales - totalExpenses;
-
+      const products = rec.products||[{name:"",count:"",price:""}];
+      const expenses = rec.expenses||[];
+      const totalSales = calcSales(rec), totalExpenses = calcExpenses(rec), profit = totalSales - totalExpenses;
       return (
         <div>
-          {/* イベント表示 */}
           <div style={{background:"rgba(255,255,255,0.06)",borderRadius:16,padding:"12px 16px",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
             <span style={{fontSize:20}}>🛍️</span>
             <div style={{flex:1}}>
-              <div style={{fontSize:10,color:"#9b8fff",letterSpacing:2}}>
-                現在のイベント　{workspace==="baito"?"【バイト】":"【自分の事業】"}
-              </div>
-              <div style={{fontSize:14,fontWeight:700}}>
-                {selectedEvent ? `${selectedEvent.name}${selectedEvent.location ? "　"+selectedEvent.location : ""}` : "（未選択）"}
-              </div>
+              <div style={{fontSize:10,color:"#9b8fff",letterSpacing:2}}>現在のイベント　{workspace==="baito"?"【バイト】":"【自分の事業】"}</div>
+              <div style={{fontSize:14,fontWeight:700}}>{selectedEvent?`${selectedEvent.name}${selectedEvent.location?"　"+selectedEvent.location:""}` : "（未選択）"}</div>
             </div>
             <button onClick={()=>setTab(1)} style={{background:"rgba(138,101,255,0.3)",border:"1px solid rgba(138,101,255,0.5)",color:"#c4b5ff",borderRadius:8,padding:"6px 12px",fontSize:12,cursor:"pointer"}}>変更</button>
           </div>
-
           {!selectedEventId ? (
             <div style={{textAlign:"center",padding:"48px 0",color:"#9b8fff"}}>
               <div style={{fontSize:48,marginBottom:12}}>📅</div>
@@ -287,7 +242,6 @@
           ) : (
             <>
               <DateSelector selectedDate={selectedDate} setSelectedDate={setSelectedDate} today={today} records={records} selectedEventId={selectedEventId} />
-
               {/* 商品別売上 */}
               <div style={CARD}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -295,38 +249,22 @@
                   <div style={{fontSize:15,fontWeight:800,color:"#fb923c"}}>{fmtYen(totalSales)}</div>
                 </div>
                 {products.map((p,i)=>{
-                  const sub = (parseInt(p.count)||0)*(parseInt(p.price)||0);
+                  const sub=(parseInt(p.count)||0)*(parseInt(p.price)||0);
                   return (
                     <div key={i} style={{marginBottom:10}}>
                       <div style={{display:"flex",gap:5,alignItems:"center",marginBottom:3}}>
-                        <input value={p.name||""} onChange={e=>{
-                          const np=products.map((x,j)=>j===i?{...x,name:e.target.value}:x);
-                          updateRec({products:np});
-                        }} placeholder="商品名" style={{...IS,flex:2,fontSize:13,padding:"8px 8px"}} />
-                        <input value={p.count||""} onChange={e=>{
-                          const np=products.map((x,j)=>j===i?{...x,count:e.target.value}:x);
-                          updateRec({products:np});
-                        }} placeholder="個数" type="number" style={{...IS,width:56,flex:"none",fontSize:13,padding:"8px 5px"}} />
+                        <input value={p.name||""} onChange={e=>{const np=products.map((x,j)=>j===i?{...x,name:e.target.value}:x);updateRec({products:np});}} placeholder="商品名" style={{...IS,flex:2,fontSize:13,padding:"8px 8px"}} />
+                        <input value={p.count||""} onChange={e=>{const np=products.map((x,j)=>j===i?{...x,count:e.target.value}:x);updateRec({products:np});}} placeholder="個数" type="number" style={{...IS,width:56,flex:"none",fontSize:13,padding:"8px 5px"}} />
                         <span style={{color:"#9b8fff",fontSize:12,flexShrink:0}}>×</span>
-                        <input value={p.price||""} onChange={e=>{
-                          const np=products.map((x,j)=>j===i?{...x,price:e.target.value}:x);
-                          updateRec({products:np});
-                        }} placeholder="単価" type="number" style={{...IS,width:72,flex:"none",fontSize:13,padding:"8px 5px"}} />
-                        <button onClick={()=>updateRec({products:products.filter((_,j)=>j!==i)})}
-                          style={{background:"rgba(248,113,113,0.2)",border:"none",color:"#f87171",borderRadius:6,padding:"8px 8px",cursor:"pointer",fontSize:13,flexShrink:0}}>✕</button>
+                        <input value={p.price||""} onChange={e=>{const np=products.map((x,j)=>j===i?{...x,price:e.target.value}:x);updateRec({products:np});}} placeholder="単価" type="number" style={{...IS,width:72,flex:"none",fontSize:13,padding:"8px 5px"}} />
+                        <button onClick={()=>updateRec({products:products.filter((_,j)=>j!==i)})} style={{background:"rgba(248,113,113,0.2)",border:"none",color:"#f87171",borderRadius:6,padding:"8px 8px",cursor:"pointer",fontSize:13,flexShrink:0}}>✕</button>
                       </div>
-                      {sub>0&&<div style={{fontSize:11,color:"#fb923c",textAlign:"right",marginTop:2}}>
-                        {parseInt(p.count)||0}個 × {fmtYen(parseInt(p.price)||0)} = {fmtYen(sub)}
-                      </div>}
+                      {sub>0&&<div style={{fontSize:11,color:"#fb923c",textAlign:"right",marginTop:2}}>{parseInt(p.count)||0}個 × {fmtYen(parseInt(p.price)||0)} = {fmtYen(sub)}</div>}
                     </div>
                   );
                 })}
-                <button onClick={()=>updateRec({products:[...products,{name:"",count:"",price:""}]})}
-                  style={{background:"rgba(251,146,60,0.2)",border:"1px solid rgba(251,146,60,0.4)",color:"#fb923c",borderRadius:8,padding:"6px 14px",fontSize:12,cursor:"pointer",marginTop:4}}>
-                  ＋ 商品を追加
-                </button>
+                <button onClick={()=>updateRec({products:[...products,{name:"",count:"",price:""}]})} style={{background:"rgba(251,146,60,0.2)",border:"1px solid rgba(251,146,60,0.4)",color:"#fb923c",borderRadius:8,padding:"6px 14px",fontSize:12,cursor:"pointer",marginTop:4}}>＋ 商品を追加</button>
               </div>
-
               {/* 経費 */}
               <div style={CARD}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -336,55 +274,29 @@
                 {expenses.length===0&&<div style={{fontSize:12,color:"#5a5070",marginBottom:10}}>経費なし</div>}
                 {expenses.map((e,i)=>(
                   <div key={i} style={{display:"flex",gap:5,alignItems:"center",marginBottom:8}}>
-                    <input value={e.name||""} onChange={ev=>{
-                      const ne=expenses.map((x,j)=>j===i?{...x,name:ev.target.value}:x);
-                      updateRec({expenses:ne});
-                    }} placeholder="経費名（例：交通費）" style={{...IS,flex:2,fontSize:13,padding:"8px 8px"}} />
-                    <input value={e.amount||""} onChange={ev=>{
-                      const ne=expenses.map((x,j)=>j===i?{...x,amount:ev.target.value}:x);
-                      updateRec({expenses:ne});
-                    }} placeholder="金額" type="number" style={{...IS,flex:1,fontSize:13,padding:"8px 8px"}} />
-                    <button onClick={()=>updateRec({expenses:expenses.filter((_,j)=>j!==i)})}
-                      style={{background:"rgba(248,113,113,0.2)",border:"none",color:"#f87171",borderRadius:6,padding:"8px 8px",cursor:"pointer",fontSize:13,flexShrink:0}}>✕</button>
+                    <input value={e.name||""} onChange={ev=>{const ne=expenses.map((x,j)=>j===i?{...x,name:ev.target.value}:x);updateRec({expenses:ne});}} placeholder="経費名（例：交通費）" style={{...IS,flex:2,fontSize:13,padding:"8px 8px"}} />
+                    <input value={e.amount||""} onChange={ev=>{const ne=expenses.map((x,j)=>j===i?{...x,amount:ev.target.value}:x);updateRec({expenses:ne});}} placeholder="金額" type="number" style={{...IS,flex:1,fontSize:13,padding:"8px 8px"}} />
+                    <button onClick={()=>updateRec({expenses:expenses.filter((_,j)=>j!==i)})} style={{background:"rgba(248,113,113,0.2)",border:"none",color:"#f87171",borderRadius:6,padding:"8px 8px",cursor:"pointer",fontSize:13,flexShrink:0}}>✕</button>
                   </div>
                 ))}
-                <button onClick={()=>updateRec({expenses:[...expenses,{name:"",amount:""}]})}
-                  style={{background:"rgba(248,113,113,0.15)",border:"1px solid rgba(248,113,113,0.35)",color:"#f87171",borderRadius:8,padding:"6px 14px",fontSize:12,cursor:"pointer"}}>
-                  ＋ 経費を追加
-                </button>
+                <button onClick={()=>updateRec({expenses:[...expenses,{name:"",amount:""}]})} style={{background:"rgba(248,113,113,0.15)",border:"1px solid rgba(248,113,113,0.35)",color:"#f87171",borderRadius:8,padding:"6px 14px",fontSize:12,cursor:"pointer"}}>＋ 経費を追加</button>
               </div>
-
-              {/* 集計サマリー */}
+              {/* 集計 */}
               <div style={{background:"linear-gradient(135deg,rgba(251,146,60,0.12),rgba(138,101,255,0.1))",border:"1px solid rgba(251,146,60,0.35)",borderRadius:16,padding:"16px 18px",marginBottom:14}}>
                 <div style={{fontSize:11,color:"#9b8fff",marginBottom:10,letterSpacing:2}}>◆ 本日集計</div>
                 {[["売上合計","#fb923c",totalSales],["経費合計","#f87171",totalExpenses]].map(([label,col,val])=>(
-                  <div key={label} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"4px 0"}}>
-                    <span style={{color:"#9b8fff"}}>{label}</span>
-                    <span style={{color:col,fontWeight:700}}>{fmtYen(val)}</span>
-                  </div>
+                  <div key={label} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"4px 0"}}><span style={{color:"#9b8fff"}}>{label}</span><span style={{color:col,fontWeight:700}}>{fmtYen(val)}</span></div>
                 ))}
                 <div style={{borderTop:"1px solid rgba(255,255,255,0.1)",marginTop:10,paddingTop:10,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <span style={{fontWeight:800,fontSize:15}}>利益</span>
                   <span style={{fontWeight:800,fontSize:22,color:profit>=0?"#22d3a5":"#f87171"}}>{fmtYen(profit)}</span>
                 </div>
               </div>
-
-              {/* メモセクション */}
-              {[
-                ["customerReactions",   "😊 お客様の反応",          "お客様の反応・声をメモ"],
-                ["frequentQuestions",   "❓ よく聞かれた質問",      "よく聞かれた質問をメモ"],
-                ["displayImprovements", "🏷️ POP・売場改善の反応",   "POPや売場改善に対する反応"],
-                ["nextImprovements",    "✅ 次回改善点",             "次回に改善したいことをメモ"],
-              ].map(([field, label, placeholder])=>(
+              {/* メモ */}
+              {[["customerReactions","😊 お客様の反応","お客様の反応・声をメモ"],["frequentQuestions","❓ よく聞かれた質問","よく聞かれた質問をメモ"],["displayImprovements","🏷️ POP・売場改善の反応","POPや売場改善に対する反応"],["nextImprovements","✅ 次回改善点","次回に改善したいことをメモ"]].map(([field,label,placeholder])=>(
                 <div key={field} style={{background:"rgba(255,255,255,0.04)",borderRadius:14,padding:"14px 16px",marginBottom:10,border:"1px solid rgba(255,255,255,0.06)"}}>
                   <div style={{fontSize:11,color:"#9b8fff",marginBottom:6,fontWeight:700,letterSpacing:1}}>{label}</div>
-                  <textarea
-                    value={rec[field]||""}
-                    onChange={e=>updateRec({[field]:e.target.value})}
-                    rows={3}
-                    placeholder={placeholder}
-                    style={{...IS,resize:"vertical",fontFamily:"inherit",fontSize:13,lineHeight:1.7}}
-                  />
+                  <textarea value={rec[field]||""} onChange={e=>updateRec({[field]:e.target.value})} rows={3} placeholder={placeholder} style={{...IS,resize:"vertical",fontFamily:"inherit",fontSize:13,lineHeight:1.7}} />
                 </div>
               ))}
             </>
@@ -393,37 +305,325 @@
       );
     }
 
+    // ─── VenueInfoTab ─────────────────────────────────────────────
+    function VenueInfoTab({ eventId, venueInfo, onUpdate }) {
+      const [photos, setPhotos] = useState([]);
+      const [card, setCard] = useState(null);
+      const [mediaLoaded, setMediaLoaded] = useState(false);
+      const [uploading, setUploading] = useState(false);
+      const [uploadMsg, setUploadMsg] = useState("");
+      const photoRef = useRef(null);
+      const cardRef  = useRef(null);
+
+      useEffect(() => {
+        (async () => {
+          const [p, c] = await Promise.all([
+            storageLoad(`ev_photos_${eventId}`, []),
+            storageLoad(`ev_card_${eventId}`, null),
+          ]);
+          setPhotos(Array.isArray(p) ? p : []);
+          setCard(c || null);
+          setMediaLoaded(true);
+        })();
+      }, [eventId]);
+      useEffect(() => { if (mediaLoaded) storageSave(`ev_photos_${eventId}`, photos); }, [photos, mediaLoaded]);
+      useEffect(() => { if (mediaLoaded) storageSave(`ev_card_${eventId}`, card); }, [card, mediaLoaded]);
+
+      async function handlePhotoUpload(e) {
+        const files = Array.from(e.target.files);
+        if (!files.length) return;
+        setUploading(true); setUploadMsg("アップロード中...");
+        try {
+          const newPhotos = [];
+          for (const file of files) {
+            const result = await uploadFile(file);
+            newPhotos.push({ id:`${Date.now()}_${Math.random().toString(36).slice(2,6)}`, url:result.url, filename:result.filename, note:"" });
+          }
+          setPhotos(prev => [...prev, ...newPhotos]);
+          setUploadMsg(`${newPhotos.length}枚追加しました`);
+          setTimeout(() => setUploadMsg(""), 2000);
+        } catch { setUploadMsg("アップロードに失敗しました"); setTimeout(() => setUploadMsg(""), 3000); }
+        setUploading(false);
+        e.target.value = "";
+      }
+
+      async function handleCardUpload(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        setUploading(true); setUploadMsg("アップロード中...");
+        try {
+          if (card) await deleteFile(card.url);
+          const result = await uploadFile(file);
+          setCard({ url:result.url, filename:result.filename });
+          setUploadMsg("名刺を保存しました");
+          setTimeout(() => setUploadMsg(""), 2000);
+        } catch { setUploadMsg("アップロードに失敗しました"); setTimeout(() => setUploadMsg(""), 3000); }
+        setUploading(false);
+        e.target.value = "";
+      }
+
+      async function deletePhoto(photo) {
+        await deleteFile(photo.url);
+        setPhotos(prev => prev.filter(p => p.id !== photo.id));
+      }
+      function updatePhotoNote(id, note) { setPhotos(prev => prev.map(p => p.id===id ? {...p,note} : p)); }
+
+      const venue = venueInfo || {};
+      const up = patch => onUpdate(patch);
+
+      const ToggleGroup = ({ field, options }) => (
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {options.map(([label, val, color]) => {
+            const active = venue[field] === val;
+            const bg = active ? (color||"rgba(138,101,255,0.8)") : "rgba(255,255,255,0.07)";
+            const border = active ? (color?color.replace("0.8","0.6"):"rgba(138,101,255,0.6)") : "rgba(138,101,255,0.25)";
+            return (
+              <button key={label} onClick={()=>up({[field]:val})}
+                style={{background:bg,border:`1px solid ${border}`,color:active?"#fff":"#9b8fff",borderRadius:8,padding:"7px 20px",fontSize:13,cursor:"pointer",fontWeight:active?700:400,transition:"all .15s"}}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      );
+
+      return (
+        <div>
+          {uploadMsg && <div style={{background:uploadMsg.includes("失敗")?"rgba(248,113,113,0.2)":"rgba(34,211,165,0.2)",border:`1px solid ${uploadMsg.includes("失敗")?"rgba(248,113,113,0.4)":"rgba(34,211,165,0.4)"}`,borderRadius:10,padding:"8px 14px",marginBottom:12,fontSize:12,color:uploadMsg.includes("失敗")?"#f87171":"#22d3a5",fontWeight:700}}>{uploadMsg}</div>}
+
+          {/* 営業時間 */}
+          <div style={CARD}>
+            <div style={{fontSize:11,color:"#fbbf24",letterSpacing:2,fontWeight:700,marginBottom:14}}>🕐 営業時間</div>
+            {[["storeHours","百貨店・施設の営業時間","例：10:00〜20:00（最終日18:00まで）"],["eventHours","催事会場の営業時間","例：10:00〜19:00"]].map(([field,label,ph])=>(
+              <div key={field} style={{marginBottom:10}}>
+                <div style={{fontSize:11,color:"#9b8fff",marginBottom:4}}>{label}</div>
+                <input value={venue[field]||""} onChange={e=>up({[field]:e.target.value})} placeholder={ph} style={IS} />
+              </div>
+            ))}
+          </div>
+
+          {/* 催事担当者 */}
+          <div style={CARD}>
+            <div style={{fontSize:11,color:"#c4b5ff",letterSpacing:2,fontWeight:700,marginBottom:14}}>👤 催事担当者</div>
+            {[["coordinatorName","担当者名","例：田中 花子"],["coordinatorNote","備考（内線・連絡先など）","例：内線 123 / 090-xxxx-xxxx"]].map(([field,label,ph])=>(
+              <div key={field} style={{marginBottom:10}}>
+                <div style={{fontSize:11,color:"#9b8fff",marginBottom:4}}>{label}</div>
+                <input value={venue[field]||""} onChange={e=>up({[field]:e.target.value})} placeholder={ph} style={IS} />
+              </div>
+            ))}
+            {/* 名刺 */}
+            <div style={{marginTop:4}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div style={{fontSize:11,color:"#9b8fff"}}>名刺画像</div>
+                <div style={{display:"flex",gap:6}}>
+                  <button onClick={()=>cardRef.current?.click()} disabled={uploading}
+                    style={{background:"rgba(138,101,255,0.3)",border:"1px solid rgba(138,101,255,0.5)",color:"#c4b5ff",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer",fontWeight:700}}>
+                    {card ? "📷 更新" : "+ アップロード"}
+                  </button>
+                  {card && <button onClick={async()=>{await deleteFile(card.url);setCard(null);}}
+                    style={{background:"rgba(248,113,113,0.15)",border:"1px solid rgba(248,113,113,0.3)",color:"#f87171",borderRadius:6,padding:"5px 10px",fontSize:11,cursor:"pointer"}}>削除</button>}
+                </div>
+              </div>
+              {card ? (
+                <div style={{borderRadius:10,overflow:"hidden",border:"1px solid rgba(138,101,255,0.3)"}}>
+                  <img src={card.url} alt="名刺" style={{width:"100%",display:"block",maxHeight:240,objectFit:"contain",background:"rgba(0,0,0,0.3)"}} />
+                  <div style={{padding:"6px 10px",fontSize:11,color:"#9b8fff"}}>{card.filename}</div>
+                </div>
+              ) : (
+                <div style={{border:"2px dashed rgba(138,101,255,0.3)",borderRadius:10,padding:"20px",textAlign:"center",color:"#5a5070",fontSize:12,cursor:"pointer"}} onClick={()=>cardRef.current?.click()}>
+                  タップして名刺をアップロード
+                </div>
+              )}
+              <input ref={cardRef} type="file" accept="image/*" style={{display:"none"}} onChange={handleCardUpload} />
+            </div>
+          </div>
+
+          {/* 休憩所 */}
+          <div style={CARD}>
+            <div style={{fontSize:11,color:"#22d3a5",letterSpacing:2,fontWeight:700,marginBottom:12}}>🚻 休憩所の場所</div>
+            <input value={venue.breakroomLocation||""} onChange={e=>up({breakroomLocation:e.target.value})} placeholder="例：B1F スタッフルーム・更衣室" style={IS} />
+          </div>
+
+          {/* 備品 */}
+          <div style={CARD}>
+            <div style={{fontSize:11,color:"#fb923c",letterSpacing:2,fontWeight:700,marginBottom:14}}>📦 備品情報</div>
+            {/* 保冷剤 */}
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:8,color:"#d0c8ff"}}>🧊 保冷剤</div>
+              <div style={{display:"flex",gap:8,marginBottom:8}}>
+                {[["有",true],["無",false]].map(([label,val])=>{
+                  const active=venue.coolantAvailable===val;
+                  return <button key={label} onClick={()=>up({coolantAvailable:val})} style={{background:active?"rgba(138,101,255,0.8)":"rgba(255,255,255,0.07)",border:"1px solid rgba(138,101,255,0.4)",color:active?"#fff":"#9b8fff",borderRadius:8,padding:"7px 28px",fontSize:13,cursor:"pointer",fontWeight:active?700:400,transition:"all .15s"}}>{label}</button>;
+                })}
+              </div>
+              {venue.coolantAvailable===true && (
+                <div style={{display:"flex",gap:8,marginLeft:8}}>
+                  {[["無料",false,"rgba(34,211,165,0.7)"],["有料",true,"rgba(251,146,60,0.7)"]].map(([label,val,col])=>{
+                    const active=venue.coolantPaid===val;
+                    return <button key={label} onClick={()=>up({coolantPaid:val})} style={{background:active?col:"rgba(255,255,255,0.07)",border:`1px solid ${active?col.replace("0.7","0.5"):"rgba(255,255,255,0.2)"}`,color:active?"#fff":"#9b8fff",borderRadius:8,padding:"6px 22px",fontSize:12,cursor:"pointer",fontWeight:active?700:400,transition:"all .15s"}}>{label}</button>;
+                  })}
+                </div>
+              )}
+            </div>
+            {/* 緩衝材 */}
+            <div>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:8,color:"#d0c8ff"}}>📦 緩衝材</div>
+              <div style={{display:"flex",gap:8}}>
+                {[["有",true],["無",false]].map(([label,val])=>{
+                  const active=venue.cushioningAvailable===val;
+                  return <button key={label} onClick={()=>up({cushioningAvailable:val})} style={{background:active?"rgba(138,101,255,0.8)":"rgba(255,255,255,0.07)",border:"1px solid rgba(138,101,255,0.4)",color:active?"#fff":"#9b8fff",borderRadius:8,padding:"7px 28px",fontSize:13,cursor:"pointer",fontWeight:active?700:400,transition:"all .15s"}}>{label}</button>;
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* 売り場写真 */}
+          <div style={CARD}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div style={{fontSize:11,color:"#9b8fff",letterSpacing:2,fontWeight:700}}>📸 売り場写真（{photos.length}枚）</div>
+              <button onClick={()=>photoRef.current?.click()} disabled={uploading}
+                style={{background:"rgba(251,146,60,0.3)",border:"1px solid rgba(251,146,60,0.5)",color:"#fb923c",borderRadius:8,padding:"6px 14px",fontSize:12,cursor:uploading?"not-allowed":"pointer",fontWeight:700,opacity:uploading?0.5:1}}>
+                {uploading ? "処理中..." : "＋ 写真追加"}
+              </button>
+            </div>
+            <input ref={photoRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={handlePhotoUpload} />
+            {photos.length===0&&!uploading&&(
+              <div style={{border:"2px dashed rgba(255,255,255,0.1)",borderRadius:10,padding:"24px",textAlign:"center",color:"#5a5070",fontSize:13,cursor:"pointer"}} onClick={()=>photoRef.current?.click()}>
+                <div style={{fontSize:32,marginBottom:8}}>📷</div>タップして写真を追加
+              </div>
+            )}
+            {photos.map(photo=>(
+              <div key={photo.id} style={{marginBottom:14,background:"rgba(255,255,255,0.04)",borderRadius:12,overflow:"hidden",border:"1px solid rgba(255,255,255,0.08)"}}>
+                <img src={photo.url} alt={photo.filename} style={{width:"100%",display:"block",maxHeight:280,objectFit:"cover"}}
+                  onError={e=>{e.target.style.display="none";e.target.nextSibling.style.display="flex";}}
+                />
+                <div style={{display:"none",alignItems:"center",justifyContent:"center",height:80,color:"#5a5070",fontSize:12}}>画像を読み込めません</div>
+                <div style={{padding:"10px 12px"}}>
+                  <textarea value={photo.note} onChange={e=>updatePhotoNote(photo.id,e.target.value)} placeholder="メモ（例：エントランス側の売り場）" rows={2} style={{...IS,resize:"vertical",fontFamily:"inherit",fontSize:12,marginBottom:8}} />
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontSize:11,color:"#5a5070"}}>{photo.filename}</span>
+                    <button onClick={()=>deletePhoto(photo)} style={{background:"rgba(248,113,113,0.15)",border:"1px solid rgba(248,113,113,0.3)",color:"#f87171",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer"}}>🗑️ 削除</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── EventDetail ──────────────────────────────────────────────
+    function EventDetail({ event, onBack, onSelectForRecord, events, setEvents, venueInfo, onUpdateVenue }) {
+      const [subTab, setSubTab] = useState(0);
+      const [editName,     setEditName]     = useState(event.name);
+      const [editLocation, setEditLocation] = useState(event.location||"");
+      const [editDate,     setEditDate]     = useState(event.date||"");
+      const [editDateEnd,  setEditDateEnd]  = useState(event.dateEnd||"");
+      const [saveMsg,      setSaveMsg]      = useState("");
+
+      function saveBasic() {
+        setEvents(prev=>prev.map(e=>e.id===event.id?{...e,name:editName,location:editLocation,date:editDate,dateEnd:editDateEnd}:e));
+        setSaveMsg("✅ 保存しました"); setTimeout(()=>setSaveMsg(""),2000);
+      }
+
+      return (
+        <div>
+          {/* ヘッダー */}
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+            <button onClick={onBack} style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.15)",color:"#c4b5ff",borderRadius:8,padding:"7px 14px",fontSize:12,cursor:"pointer",flexShrink:0,fontWeight:700}}>← 一覧</button>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:800,fontSize:16,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{event.name}</div>
+              {event.location&&<div style={{fontSize:11,color:"#9b8fff"}}>📍 {event.location}</div>}
+              {event.date&&<div style={{fontSize:11,color:"#7b6fff"}}>{fmtJapanDateRange(event.date,event.dateEnd)}</div>}
+            </div>
+          </div>
+
+          {/* 販売記録へボタン */}
+          <button onClick={onSelectForRecord}
+            style={{width:"100%",background:"linear-gradient(135deg,rgba(251,146,60,0.75),rgba(138,101,255,0.75))",border:"none",color:"#fff",borderRadius:12,padding:"13px 0",fontSize:14,fontWeight:800,cursor:"pointer",marginBottom:16,letterSpacing:1,boxShadow:"0 4px 16px rgba(138,101,255,0.3)"}}>
+            🛍️ この日の販売記録へ →
+          </button>
+
+          {/* サブタブ */}
+          <div style={{display:"flex",gap:3,background:"rgba(255,255,255,0.07)",borderRadius:10,padding:3,marginBottom:16}}>
+            {["基本情報","会場情報"].map((t,i)=>(
+              <button key={i} onClick={()=>setSubTab(i)}
+                style={{flex:1,padding:"8px 0",borderRadius:8,border:"none",cursor:"pointer",background:subTab===i?"rgba(138,101,255,0.85)":"transparent",color:subTab===i?"#fff":"#9b8fff",fontWeight:subTab===i?700:400,fontSize:12,transition:"all .2s"}}>
+                {i===1?"🏢 "+t:t}
+              </button>
+            ))}
+          </div>
+
+          {/* 基本情報 */}
+          {subTab===0&&(
+            <div>
+              {[["イベント名 *","text",editName,setEditName,"例：春の外商フェア"],["場所・会場","text",editLocation,setEditLocation,"例：新宿三越"],["開始日","date",editDate,setEditDate,""],["終了日","date",editDateEnd,setEditDateEnd,""]].map(([label,type,val,set,ph])=>(
+                <div key={label} style={{marginBottom:10}}>
+                  <div style={{fontSize:11,color:"#9b8fff",marginBottom:4}}>{label}</div>
+                  <input type={type} value={val} onChange={e=>set(e.target.value)} placeholder={ph} style={IS} />
+                </div>
+              ))}
+              {saveMsg&&<div style={{fontSize:12,color:"#22d3a5",marginBottom:8,fontWeight:700}}>{saveMsg}</div>}
+              <button onClick={saveBasic} style={{width:"100%",background:"rgba(138,101,255,0.7)",border:"none",color:"#fff",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer"}}>保存する</button>
+            </div>
+          )}
+
+          {/* 会場情報 */}
+          {subTab===1&&(
+            <VenueInfoTab eventId={event.id} venueInfo={venueInfo} onUpdate={onUpdateVenue} />
+          )}
+        </div>
+      );
+    }
+
     // ─── EventTab ─────────────────────────────────────────────────
-    function EventTab({ events, setEvents, allEvents, selectedEventId, setSelectedEventId, workspace, setTab, records }) {
+    function EventTab({ events, setEvents, allEvents, selectedEventId, setSelectedEventId, workspace, setTab, records, venueData, setVenueData }) {
       const [showForm, setShowForm] = useState(false);
-      const [editId, setEditId]     = useState(null);
+      const [detailId, setDetailId] = useState(null);
       const [name,     setName]     = useState("");
       const [location, setLocation] = useState("");
       const [date,     setDate]     = useState("");
       const [dateEnd,  setDateEnd]  = useState("");
 
-      function resetForm() { setEditId(null); setName(""); setLocation(""); setDate(""); setDateEnd(""); }
-      function openNew()  { resetForm(); setShowForm(true); }
-      function openEdit(ev) {
-        setEditId(ev.id); setName(ev.name); setLocation(ev.location||"");
-        setDate(ev.date||""); setDateEnd(ev.dateEnd||""); setShowForm(true);
-      }
-      function save() {
+      // ワークスペース切替時はdetailをリセット
+      useEffect(() => { setDetailId(null); }, [workspace]);
+
+      function resetForm() { setName(""); setLocation(""); setDate(""); setDateEnd(""); }
+      function addEvent() {
         if (!name) return;
-        if (editId) {
-          setEvents(prev=>prev.map(e=>e.id===editId?{...e,name,location,date,dateEnd}:e));
-        } else {
-          const ev = { id:Date.now().toString(), workspace, name, location, date, dateEnd };
-          setEvents(prev=>[...prev,ev]);
-          setSelectedEventId(ev.id);
-          setTab(0);
-        }
+        const ev = { id:Date.now().toString(), workspace, name, location, date, dateEnd };
+        setEvents(prev=>[...prev,ev]);
+        setSelectedEventId(ev.id);
         resetForm(); setShowForm(false);
+        setTab(0);
       }
       function deleteEv(id) {
         if (!window.confirm("このイベントを削除しますか？")) return;
         setEvents(prev=>prev.filter(e=>e.id!==id));
         if (selectedEventId===id) setSelectedEventId(null);
+        if (detailId===id) setDetailId(null);
+      }
+
+      // 詳細表示
+      if (detailId) {
+        const detailEvent = events.find(e=>e.id===detailId);
+        if (detailEvent) {
+          const venueInfo = venueData[detailId] || {};
+          function onUpdateVenue(patch) {
+            setVenueData(prev=>({...prev,[detailId]:{...(prev[detailId]||{}),...patch}}));
+          }
+          return (
+            <EventDetail
+              event={detailEvent}
+              onBack={()=>setDetailId(null)}
+              onSelectForRecord={()=>{ setSelectedEventId(detailId); setTab(0); }}
+              events={events}
+              setEvents={setEvents}
+              venueInfo={venueInfo}
+              onUpdateVenue={onUpdateVenue}
+            />
+          );
+        }
       }
 
       return (
@@ -432,7 +632,7 @@
             <div style={{fontSize:15,fontWeight:700}}>
               イベント一覧　<span style={{fontSize:12,color:"#9b8fff",fontWeight:400}}>{workspace==="baito"?"バイト":"自分の事業"}</span>
             </div>
-            <button onClick={()=>{showForm?setShowForm(false):openNew();}}
+            <button onClick={()=>{ showForm?setShowForm(false):( resetForm(),setShowForm(true) ); }}
               style={{background:"rgba(138,101,255,0.7)",border:"none",color:"#fff",borderRadius:10,padding:"8px 16px",fontSize:13,cursor:"pointer",fontWeight:700}}>
               {showForm?"✕ 閉じる":"＋ 新規"}
             </button>
@@ -440,22 +640,14 @@
 
           {showForm&&(
             <div style={{background:"rgba(255,255,255,0.07)",borderRadius:16,padding:18,marginBottom:14,border:"1px solid rgba(138,101,255,0.3)"}}>
-              <div style={{fontSize:13,fontWeight:700,marginBottom:14,color:"#c4b5ff"}}>{editId?"✏️ イベント編集":"＋ 新規イベント"}</div>
-              {[
-                ["イベント名 *","text",name,setName,"例：春の外商フェア"],
-                ["場所・会場","text",location,setLocation,"例：新宿三越"],
-                ["開始日","date",date,setDate,""],
-                ["終了日","date",dateEnd,setDateEnd,""],
-              ].map(([label,type,val,set,ph])=>(
+              <div style={{fontSize:13,fontWeight:700,marginBottom:14,color:"#c4b5ff"}}>＋ 新規イベント</div>
+              {[["イベント名 *","text",name,setName,"例：春の外商フェア"],["場所・会場","text",location,setLocation,"例：新宿三越"],["開始日","date",date,setDate,""],["終了日","date",dateEnd,setDateEnd,""]].map(([label,type,val,set,ph])=>(
                 <div key={label} style={{marginBottom:10}}>
                   <div style={{fontSize:11,color:"#9b8fff",marginBottom:4}}>{label}</div>
                   <input type={type} value={val} onChange={e=>set(e.target.value)} placeholder={ph} style={IS} />
                 </div>
               ))}
-              <button onClick={save}
-                style={{width:"100%",background:"rgba(138,101,255,0.8)",border:"none",color:"#fff",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",marginTop:4}}>
-                {editId?"更新する":"保存して選択"}
-              </button>
+              <button onClick={addEvent} style={{width:"100%",background:"rgba(138,101,255,0.8)",border:"none",color:"#fff",borderRadius:10,padding:12,fontSize:14,fontWeight:700,cursor:"pointer",marginTop:4}}>保存して選択</button>
             </div>
           )}
 
@@ -470,31 +662,29 @@
             const isSelected = selectedEventId===ev.id;
             const evRecs = Object.entries(records).filter(([k])=>k.startsWith(ev.id+"_"));
             const totalSalesEv = evRecs.reduce((s,[,r])=>s+calcSales(r),0);
+            const totalProfit  = evRecs.reduce((s,[,r])=>s+calcProfit(r),0);
             const daysWithSales = evRecs.filter(([,r])=>calcSales(r)>0).length;
-            const totalProfit = evRecs.reduce((s,[,r])=>s+calcProfit(r),0);
+            const vd = venueData[ev.id]||{};
+            const hasVenue = vd.storeHours||vd.eventHours||vd.coordinatorName||vd.breakroomLocation;
             return (
-              <div key={ev.id} onClick={()=>{setSelectedEventId(ev.id);setTab(0);}}
-                style={{background:isSelected?"rgba(138,101,255,0.22)":"rgba(255,255,255,0.05)",
-                  border:isSelected?"1px solid rgba(138,101,255,0.6)":"1px solid rgba(255,255,255,0.07)",
-                  borderRadius:16,padding:"16px 18px",marginBottom:12,cursor:"pointer",transition:"all .2s"}}>
+              <div key={ev.id} onClick={()=>setDetailId(ev.id)}
+                style={{background:isSelected?"rgba(138,101,255,0.22)":"rgba(255,255,255,0.05)",border:isSelected?"1px solid rgba(138,101,255,0.6)":"1px solid rgba(255,255,255,0.07)",borderRadius:16,padding:"16px 18px",marginBottom:12,cursor:"pointer",transition:"all .2s"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                  <div style={{flex:1}}>
+                  <div style={{flex:1,minWidth:0}}>
                     <div style={{fontWeight:700,fontSize:15,marginBottom:2}}>{ev.name}</div>
                     {ev.location&&<div style={{fontSize:12,color:"#9b8fff",marginBottom:2}}>📍 {ev.location}</div>}
                     {ev.date&&<div style={{fontSize:11,color:"#7b6fff"}}>{fmtJapanDateRange(ev.date,ev.dateEnd)}</div>}
+                    <div style={{display:"flex",gap:6,marginTop:6,flexWrap:"wrap"}}>
+                      {isSelected&&<span style={{fontSize:10,color:"#a89fff",background:"rgba(138,101,255,0.2)",borderRadius:4,padding:"2px 8px"}}>✓ 選択中</span>}
+                      {hasVenue&&<span style={{fontSize:10,color:"#fbbf24",background:"rgba(251,191,36,0.1)",borderRadius:4,padding:"2px 8px"}}>🏢 会場情報あり</span>}
+                    </div>
                   </div>
-                  <div style={{textAlign:"right",flexShrink:0}}>
+                  <div style={{textAlign:"right",flexShrink:0,marginLeft:8}}>
                     {totalSalesEv>0&&<div style={{fontSize:15,fontWeight:800,color:"#fb923c"}}>{fmtYen(totalSalesEv)}</div>}
                     {totalSalesEv>0&&<div style={{fontSize:12,fontWeight:700,color:totalProfit>=0?"#22d3a5":"#f87171"}}>利益 {fmtYen(totalProfit)}</div>}
                     {daysWithSales>0&&<div style={{fontSize:11,color:"#9b8fff"}}>{daysWithSales}日分</div>}
+                    <div style={{fontSize:11,color:"#6060a0",marginTop:4}}>詳細 →</div>
                   </div>
-                </div>
-                {isSelected&&<div style={{marginTop:8,fontSize:11,color:"#a89fff",background:"rgba(138,101,255,0.2)",borderRadius:6,padding:"4px 10px",display:"inline-block"}}>✓ 選択中</div>}
-                <div style={{display:"flex",gap:6,marginTop:10}} onClick={e=>e.stopPropagation()}>
-                  <button onClick={()=>openEdit(ev)}
-                    style={{background:"rgba(138,101,255,0.2)",border:"1px solid rgba(138,101,255,0.3)",color:"#c4b5ff",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer"}}>✏️ 編集</button>
-                  <button onClick={()=>deleteEv(ev.id)}
-                    style={{background:"rgba(248,113,113,0.15)",border:"1px solid rgba(248,113,113,0.3)",color:"#f87171",borderRadius:6,padding:"5px 12px",fontSize:11,cursor:"pointer"}}>削除</button>
                 </div>
               </div>
             );
@@ -508,61 +698,44 @@
       const [selEventId, setSelEventId] = useState(events[0]?.id||"");
       const [selDate,    setSelDate]    = useState(today);
       const [copied,     setCopied]     = useState(false);
-
       const selEvent = events.find(e=>e.id===selEventId)||null;
-      const recKey   = selEventId ? `${selEventId}_${selDate}` : null;
-      const rec      = recKey ? (records[recKey]||{}) : {};
-      const reportText = selEvent ? generateReport(selEvent, selDate, rec) : "";
-
+      const recKey   = selEventId?`${selEventId}_${selDate}`:null;
+      const rec      = recKey?(records[recKey]||{}):{}
+      const reportText = selEvent ? generateReport(selEvent,selDate,rec) : "";
       async function copyReport() {
         try { await navigator.clipboard.writeText(reportText); setCopied(true); setTimeout(()=>setCopied(false),2000); } catch {}
       }
-
       return (
         <div>
           <div style={{marginBottom:14}}>
             <div style={{fontSize:11,color:"#9b8fff",marginBottom:5}}>イベントを選択</div>
-            {events.length===0
-              ? <div style={{fontSize:13,color:"#5a5070"}}>イベントがありません</div>
+            {events.length===0 ? <div style={{fontSize:13,color:"#5a5070"}}>イベントがありません</div>
               : <select value={selEventId} onChange={e=>setSelEventId(e.target.value)} style={{...IS,cursor:"pointer"}}>
                   {events.map(e=><option key={e.id} value={e.id} style={{background:"#1e1a3a"}}>{e.name}　{e.location||""}</option>)}
-                </select>
-            }
+                </select>}
           </div>
           <div style={{marginBottom:14}}>
             <div style={{fontSize:11,color:"#9b8fff",marginBottom:5}}>日付</div>
             <input type="date" value={selDate} onChange={e=>setSelDate(e.target.value)} style={IS} />
           </div>
-
           {selEvent&&(
             <>
-              {/* 集計サマリー */}
               <div style={{background:"linear-gradient(135deg,rgba(251,146,60,0.12),rgba(138,101,255,0.1))",border:"1px solid rgba(251,146,60,0.35)",borderRadius:16,padding:"16px 18px",marginBottom:14}}>
                 <div style={{fontSize:11,color:"#9b8fff",marginBottom:10,letterSpacing:2}}>◆ {fmtDateShort(selDate)} の集計</div>
                 {[["売上合計","#fb923c",calcSales(rec)],["経費合計","#f87171",calcExpenses(rec)]].map(([label,col,val])=>(
-                  <div key={label} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"4px 0"}}>
-                    <span style={{color:"#9b8fff"}}>{label}</span>
-                    <span style={{color:col,fontWeight:700}}>{fmtYen(val)}</span>
-                  </div>
+                  <div key={label} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"4px 0"}}><span style={{color:"#9b8fff"}}>{label}</span><span style={{color:col,fontWeight:700}}>{fmtYen(val)}</span></div>
                 ))}
                 <div style={{borderTop:"1px solid rgba(255,255,255,0.1)",marginTop:10,paddingTop:10,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <span style={{fontWeight:800,fontSize:15}}>利益</span>
                   <span style={{fontWeight:800,fontSize:22,color:calcProfit(rec)>=0?"#22d3a5":"#f87171"}}>{fmtYen(calcProfit(rec))}</span>
                 </div>
               </div>
-
-              {/* 日報テキスト */}
               <div style={{background:"rgba(0,0,0,0.3)",borderRadius:14,padding:"14px 16px",marginBottom:14,border:"1px solid rgba(255,255,255,0.08)"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
                   <div style={{fontSize:11,color:"#9b8fff",letterSpacing:2,fontWeight:700}}>📋 日報テキスト</div>
-                  <button onClick={copyReport}
-                    style={{background:copied?"rgba(34,211,165,0.5)":"rgba(138,101,255,0.6)",border:"none",color:"#fff",borderRadius:8,padding:"7px 16px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
-                    {copied?"✓ コピー済！":"📋 コピー"}
-                  </button>
+                  <button onClick={copyReport} style={{background:copied?"rgba(34,211,165,0.5)":"rgba(138,101,255,0.6)",border:"none",color:"#fff",borderRadius:8,padding:"7px 16px",fontSize:12,fontWeight:700,cursor:"pointer"}}>{copied?"✓ コピー済！":"📋 コピー"}</button>
                 </div>
-                <div style={{fontSize:12,color:"#d0c8ff",lineHeight:1.9,fontFamily:"'Noto Sans JP',monospace",whiteSpace:"pre-wrap",wordBreak:"break-all"}}>
-                  {reportText||<span style={{color:"#5a5070"}}>（データなし）</span>}
-                </div>
+                <div style={{fontSize:12,color:"#d0c8ff",lineHeight:1.9,fontFamily:"'Noto Sans JP',monospace",whiteSpace:"pre-wrap",wordBreak:"break-all"}}>{reportText||<span style={{color:"#5a5070"}}>（データなし）</span>}</div>
               </div>
             </>
           )}
@@ -574,60 +747,25 @@
     function SummaryTab({ events, records, today }) {
       const [month, setMonth] = useState(()=>today.slice(0,7));
       const [copyDone, setCopyDone] = useState(false);
-
       const eventIds = new Set(events.map(e=>e.id));
-      const monthRecs = Object.entries(records).filter(([k])=>{
-        const idx = k.indexOf("_");
-        if (idx<0) return false;
-        const evId = k.slice(0,idx), dateStr = k.slice(idx+1);
-        return eventIds.has(evId) && dateStr.startsWith(month);
-      });
-
-      const totalSales    = monthRecs.reduce((s,[,r])=>s+calcSales(r),0);
-      const totalExpenses = monthRecs.reduce((s,[,r])=>s+calcExpenses(r),0);
-      const totalProfit   = totalSales - totalExpenses;
-      const daysWithData  = monthRecs.filter(([,r])=>calcSales(r)>0).length;
-
-      const eventTotals = events.map(ev=>{
-        const evRecs = monthRecs.filter(([k])=>k.startsWith(ev.id+"_"));
-        return { ev, sales:evRecs.reduce((s,[,r])=>s+calcSales(r),0), expenses:evRecs.reduce((s,[,r])=>s+calcExpenses(r),0), days:evRecs.filter(([,r])=>calcSales(r)>0).length };
-      }).filter(et=>et.sales>0||et.expenses>0);
-
+      const monthRecs = Object.entries(records).filter(([k])=>{ const idx=k.indexOf("_"); if(idx<0) return false; return eventIds.has(k.slice(0,idx))&&k.slice(idx+1).startsWith(month); });
+      const totalSales=monthRecs.reduce((s,[,r])=>s+calcSales(r),0), totalExpenses=monthRecs.reduce((s,[,r])=>s+calcExpenses(r),0), totalProfit=totalSales-totalExpenses;
+      const daysWithData=monthRecs.filter(([,r])=>calcSales(r)>0).length;
+      const eventTotals=events.map(ev=>{ const evRecs=monthRecs.filter(([k])=>k.startsWith(ev.id+"_")); return {ev,sales:evRecs.reduce((s,[,r])=>s+calcSales(r),0),expenses:evRecs.reduce((s,[,r])=>s+calcExpenses(r),0),days:evRecs.filter(([,r])=>calcSales(r)>0).length}; }).filter(et=>et.sales>0||et.expenses>0);
       async function copyMonthly() {
-        const lines = [
-          `${month} 月次集計`, "",
-          `売上合計　${fmtYen(totalSales)}`,
-          `経費合計　${fmtYen(totalExpenses)}`,
-          `利　益　　${fmtYen(totalProfit)}`,
-          `稼働日数　${daysWithData}日`,
-          "", "■ イベント別内訳",
-        ];
-        eventTotals.forEach(({ev,sales,expenses,days})=>{
-          lines.push(`${ev.name}${ev.location?"　"+ev.location:""}`);
-          lines.push(`  売上 ${fmtYen(sales)}　経費 ${fmtYen(expenses)}　利益 ${fmtYen(sales-expenses)}　${days}日`);
-        });
+        const lines=[`${month} 月次集計`,"",`売上合計　${fmtYen(totalSales)}`,`経費合計　${fmtYen(totalExpenses)}`,`利　益　　${fmtYen(totalProfit)}`,`稼働日数　${daysWithData}日`,"","■ イベント別内訳"];
+        eventTotals.forEach(({ev,sales,expenses,days})=>{ lines.push(`${ev.name}${ev.location?"　"+ev.location:""}`); lines.push(`  売上 ${fmtYen(sales)}　経費 ${fmtYen(expenses)}　利益 ${fmtYen(sales-expenses)}　${days}日`); });
         try { await navigator.clipboard.writeText(lines.join("\n")); setCopyDone(true); setTimeout(()=>setCopyDone(false),2000); } catch {}
       }
-
       return (
         <div>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18,flexWrap:"wrap"}}>
             <input type="month" value={month} onChange={e=>setMonth(e.target.value)} style={{...IS,width:"auto"}} />
             <div style={{fontSize:13,color:"#9b8fff"}}>の集計</div>
-            <button onClick={copyMonthly}
-              style={{background:copyDone?"rgba(34,211,165,0.4)":"rgba(138,101,255,0.4)",border:"none",color:"#fff",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
-              {copyDone?"✓ コピー済":"📋 コピー"}
-            </button>
+            <button onClick={copyMonthly} style={{background:copyDone?"rgba(34,211,165,0.4)":"rgba(138,101,255,0.4)",border:"none",color:"#fff",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>{copyDone?"✓ コピー済":"📋 コピー"}</button>
           </div>
-
-          {/* サマリーカード */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:18}}>
-            {[
-              ["売上合計","💰","#fb923c",fmtYen(totalSales)],
-              ["経費合計","💸","#f87171",fmtYen(totalExpenses)],
-              ["利益",    "📈","#22d3a5",fmtYen(totalProfit)],
-              ["稼働日数","📅","#c4b5ff",`${daysWithData}日`],
-            ].map(([label,emoji,col,val])=>(
+            {[["売上合計","💰","#fb923c",fmtYen(totalSales)],["経費合計","💸","#f87171",fmtYen(totalExpenses)],["利益","📈","#22d3a5",fmtYen(totalProfit)],["稼働日数","📅","#c4b5ff",`${daysWithData}日`]].map(([label,emoji,col,val])=>(
               <div key={label} style={{background:"rgba(138,101,255,0.15)",borderRadius:14,padding:"16px 18px",border:"1px solid rgba(138,101,255,0.25)"}}>
                 <div style={{fontSize:22,marginBottom:4}}>{emoji}</div>
                 <div style={{fontSize:18,fontWeight:800,color:col}}>{val}</div>
@@ -635,62 +773,25 @@
               </div>
             ))}
           </div>
-
-          {/* イベント別内訳 */}
           {eventTotals.length>0&&(
             <div style={{...CARD,marginBottom:14}}>
               <div style={{fontSize:11,color:"#9b8fff",letterSpacing:2,marginBottom:12,fontWeight:700}}>イベント別内訳</div>
               {eventTotals.map(({ev,sales,expenses,days})=>(
                 <div key={ev.id} style={{padding:"10px 0",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                    <div>
-                      <div style={{fontWeight:700,fontSize:14}}>{ev.name}</div>
-                      {ev.location&&<div style={{fontSize:11,color:"#9b8fff"}}>📍 {ev.location}</div>}
-                      <div style={{fontSize:11,color:"#7b6fff"}}>{days}日</div>
-                    </div>
-                    <div style={{textAlign:"right"}}>
-                      <div style={{fontSize:14,fontWeight:700,color:"#fb923c"}}>{fmtYen(sales)}</div>
-                      <div style={{fontSize:11,color:"#f87171"}}>経費 {fmtYen(expenses)}</div>
-                      <div style={{fontSize:13,fontWeight:700,color:sales-expenses>=0?"#22d3a5":"#f87171"}}>利益 {fmtYen(sales-expenses)}</div>
-                    </div>
+                    <div><div style={{fontWeight:700,fontSize:14}}>{ev.name}</div>{ev.location&&<div style={{fontSize:11,color:"#9b8fff"}}>📍 {ev.location}</div>}<div style={{fontSize:11,color:"#7b6fff"}}>{days}日</div></div>
+                    <div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:700,color:"#fb923c"}}>{fmtYen(sales)}</div><div style={{fontSize:11,color:"#f87171"}}>経費 {fmtYen(expenses)}</div><div style={{fontSize:13,fontWeight:700,color:sales-expenses>=0?"#22d3a5":"#f87171"}}>利益 {fmtYen(sales-expenses)}</div></div>
                   </div>
                 </div>
               ))}
             </div>
           )}
-
-          {monthRecs.length===0&&(
-            <div style={{textAlign:"center",color:"#9b8fff",padding:"48px 0"}}>
-              <div style={{fontSize:48,marginBottom:12}}>📊</div>
-              <div>この月のデータはありません</div>
-            </div>
-          )}
-
-          {/* 日別明細 */}
+          {monthRecs.length===0&&<div style={{textAlign:"center",color:"#9b8fff",padding:"48px 0"}}><div style={{fontSize:48,marginBottom:12}}>📊</div><div>この月のデータはありません</div></div>}
           {monthRecs.length>0&&(
             <div style={CARD}>
               <div style={{fontSize:11,color:"#9b8fff",letterSpacing:2,marginBottom:12,fontWeight:700}}>日別明細</div>
-              {[...monthRecs].sort(([a],[b])=>a>b?1:-1).map(([key,rec])=>{
-                const idx = key.indexOf("_");
-                const evId = key.slice(0,idx), dateStr = key.slice(idx+1);
-                const ev = events.find(e=>e.id===evId);
-                const sales=calcSales(rec), exp=calcExpenses(rec), prof=sales-exp;
-                if (sales===0&&exp===0) return null;
-                return (
-                  <div key={key} style={{padding:"10px 0",borderBottom:"1px solid rgba(255,255,255,0.05)",fontSize:13}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                      <div>
-                        <div style={{fontWeight:600}}>{fmtDateShort(dateStr)}</div>
-                        {ev&&<div style={{fontSize:11,color:"#9b8fff"}}>{ev.name}</div>}
-                      </div>
-                      <div style={{textAlign:"right"}}>
-                        <div style={{color:"#fb923c",fontWeight:700}}>{fmtYen(sales)}</div>
-                        <div style={{fontSize:11,color:"#f87171"}}>経費 {fmtYen(exp)}</div>
-                        <div style={{fontSize:12,fontWeight:700,color:prof>=0?"#22d3a5":"#f87171"}}>利益 {fmtYen(prof)}</div>
-                      </div>
-                    </div>
-                  </div>
-                );
+              {[...monthRecs].sort(([a],[b])=>a>b?1:-1).map(([key,rec])=>{ const idx=key.indexOf("_"); const evId=key.slice(0,idx),dateStr=key.slice(idx+1); const ev=events.find(e=>e.id===evId); const sales=calcSales(rec),exp=calcExpenses(rec),prof=sales-exp; if(sales===0&&exp===0) return null;
+                return (<div key={key} style={{padding:"10px 0",borderBottom:"1px solid rgba(255,255,255,0.05)",fontSize:13}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div><div style={{fontWeight:600}}>{fmtDateShort(dateStr)}</div>{ev&&<div style={{fontSize:11,color:"#9b8fff"}}>{ev.name}</div>}</div><div style={{textAlign:"right"}}><div style={{color:"#fb923c",fontWeight:700}}>{fmtYen(sales)}</div><div style={{fontSize:11,color:"#f87171"}}>経費 {fmtYen(exp)}</div><div style={{fontSize:12,fontWeight:700,color:prof>=0?"#22d3a5":"#f87171"}}>利益 {fmtYen(prof)}</div></div></div></div>);
               })}
             </div>
           )}
@@ -704,29 +805,33 @@
       const [workspace,       setWorkspace]       = useState("baito");
       const [events,          setEvents]          = useState([]);
       const [records,         setRecords]         = useState({});
+      const [venueData,       setVenueData]       = useState({});
       const [loaded,          setLoaded]          = useState(false);
       const [selectedEventId, setSelectedEventId] = useState(null);
       const today = localDateStr(new Date());
       const [selectedDate, setSelectedDate] = useState(today);
 
-      useEffect(()=>{
-        (async()=>{
-          const [evs,recs,ws] = await Promise.all([
-            storageLoad(EVENTS_KEY,[]),
-            storageLoad(RECORDS_KEY,{}),
-            storageLoad(WS_KEY,"baito"),
+      useEffect(() => {
+        (async () => {
+          const [evs, recs, ws, vd] = await Promise.all([
+            storageLoad(EVENTS_KEY, []),
+            storageLoad(RECORDS_KEY, {}),
+            storageLoad(WS_KEY, "baito"),
+            storageLoad(VENUE_KEY, {}),
           ]);
           setEvents(Array.isArray(evs)?evs:[]);
           setRecords(recs||{});
           setWorkspace(ws||"baito");
+          setVenueData(vd||{});
           setLoaded(true);
-          document.getElementById("loading").style.display="none";
+          document.getElementById("loading").style.display = "none";
         })();
-      },[]);
+      }, []);
 
-      useEffect(()=>{if(loaded) storageSave(EVENTS_KEY,events);},[events,loaded]);
-      useEffect(()=>{if(loaded) storageSave(RECORDS_KEY,records);},[records,loaded]);
-      useEffect(()=>{if(loaded) storageSave(WS_KEY,workspace);},[workspace,loaded]);
+      useEffect(() => { if (loaded) storageSave(EVENTS_KEY, events); }, [events, loaded]);
+      useEffect(() => { if (loaded) storageSave(RECORDS_KEY, records); }, [records, loaded]);
+      useEffect(() => { if (loaded) storageSave(WS_KEY, workspace); }, [workspace, loaded]);
+      useEffect(() => { if (loaded) storageSave(VENUE_KEY, venueData); }, [venueData, loaded]);
 
       const filteredEvents = events.filter(e=>e.workspace===workspace);
 
@@ -741,83 +846,38 @@
       return (
         <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0f0c29 0%,#302b63 50%,#24243e 100%)",fontFamily:"'Noto Sans JP','Hiragino Kaku Gothic Pro',sans-serif",color:"#f0eeff",display:"flex",flexDirection:"column",alignItems:"center"}}>
           <div style={{width:"100%",maxWidth:480,padding:"20px 20px 0",boxSizing:"border-box"}}>
-            {/* ヘッダー */}
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
               <div>
                 <div style={{fontSize:10,letterSpacing:4,color:"#a89fff",textTransform:"uppercase",marginBottom:3}}>Event Sales Manager</div>
                 <div style={{fontSize:22,fontWeight:800,letterSpacing:-1,marginBottom:2}}>イベント販売記録</div>
                 <div style={{fontSize:11,color:"#9b8fff"}}>{fmtDateShort(today)}</div>
               </div>
-              {/* ワークスペース切り替え */}
               <div style={{display:"flex",flexDirection:"column",gap:6,alignItems:"flex-end"}}>
                 <div style={{fontSize:10,color:"#9b8fff",letterSpacing:1}}>ワークスペース</div>
                 <div style={{display:"flex",gap:4,background:"rgba(255,255,255,0.07)",borderRadius:10,padding:3}}>
                   {[["baito","バイト"],["jigyou","事業"]].map(([ws,label])=>(
                     <button key={ws} onClick={()=>switchWorkspace(ws)}
-                      style={{padding:"6px 14px",borderRadius:8,border:"none",cursor:"pointer",
-                        background:workspace===ws?"rgba(138,101,255,0.85)":"transparent",
-                        color:workspace===ws?"#fff":"#9b8fff",fontWeight:workspace===ws?700:400,fontSize:12,whiteSpace:"nowrap",transition:"all .2s"}}>
+                      style={{padding:"6px 14px",borderRadius:8,border:"none",cursor:"pointer",background:workspace===ws?"rgba(138,101,255,0.85)":"transparent",color:workspace===ws?"#fff":"#9b8fff",fontWeight:workspace===ws?700:400,fontSize:12,whiteSpace:"nowrap",transition:"all .2s"}}>
                       {label}
                     </button>
                   ))}
                 </div>
               </div>
             </div>
-
-            {/* タブ */}
             <div style={{display:"flex",gap:3,background:"rgba(255,255,255,0.07)",borderRadius:12,padding:3,marginBottom:20}}>
               {TABS.map((t,i)=>(
                 <button key={i} onClick={()=>setTab(i)}
-                  style={{flex:1,padding:"7px 0",borderRadius:8,border:"none",cursor:"pointer",
-                    background:tab===i?"rgba(138,101,255,0.85)":"transparent",
-                    color:tab===i?"#fff":"#9b8fff",fontWeight:tab===i?700:400,fontSize:11,transition:"all .2s"}}>
+                  style={{flex:1,padding:"7px 0",borderRadius:8,border:"none",cursor:"pointer",background:tab===i?"rgba(138,101,255,0.85)":"transparent",color:tab===i?"#fff":"#9b8fff",fontWeight:tab===i?700:400,fontSize:11,transition:"all .2s"}}>
                   {t}
                 </button>
               ))}
             </div>
           </div>
-
           <div style={{width:"100%",maxWidth:480,padding:"0 20px 64px",boxSizing:"border-box"}}>
-            {tab===0&&(
-              <RecordTab
-                events={filteredEvents}
-                records={records}
-                setRecords={setRecords}
-                selectedEventId={selectedEventId}
-                setSelectedEventId={setSelectedEventId}
-                selectedDate={selectedDate}
-                setSelectedDate={setSelectedDate}
-                today={today}
-                setTab={setTab}
-                workspace={workspace}
-              />
-            )}
-            {tab===1&&(
-              <EventTab
-                events={filteredEvents}
-                setEvents={setEvents}
-                allEvents={events}
-                selectedEventId={selectedEventId}
-                setSelectedEventId={setSelectedEventId}
-                workspace={workspace}
-                setTab={setTab}
-                records={records}
-              />
-            )}
-            {tab===2&&(
-              <ReportTab
-                events={filteredEvents}
-                records={records}
-                today={today}
-              />
-            )}
-            {tab===3&&(
-              <SummaryTab
-                events={filteredEvents}
-                records={records}
-                today={today}
-              />
-            )}
+            {tab===0&&<RecordTab events={filteredEvents} records={records} setRecords={setRecords} selectedEventId={selectedEventId} setSelectedEventId={setSelectedEventId} selectedDate={selectedDate} setSelectedDate={setSelectedDate} today={today} setTab={setTab} workspace={workspace} />}
+            {tab===1&&<EventTab events={filteredEvents} setEvents={setEvents} allEvents={events} selectedEventId={selectedEventId} setSelectedEventId={setSelectedEventId} workspace={workspace} setTab={setTab} records={records} venueData={venueData} setVenueData={setVenueData} />}
+            {tab===2&&<ReportTab events={filteredEvents} records={records} today={today} />}
+            {tab===3&&<SummaryTab events={filteredEvents} records={records} today={today} />}
           </div>
         </div>
       );
