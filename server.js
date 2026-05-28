@@ -1,9 +1,26 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const multer = require("multer");
 const { Pool } = require("pg");
+// Cloudinary設定
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "event-app",
+    allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
+  },
+});
+
+const upload = multer({ storage: storage });
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -149,18 +166,17 @@ app.get("/api/db-info", async (req, res) => {
 app.post("/api/upload", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "ファイルがありません" });
   res.json({
-    url: `/uploads/${req.file.filename}`,
+    url: req.file.path,
     filename: req.file.originalname,
-    size: req.file.size
+    public_id: req.file.filename,
   });
 });
 
 // ─── ファイル削除 API ─────────────────────────────────────────────
-app.delete("/api/upload/:filename", (req, res) => {
-  const safeName = path.basename(req.params.filename);
-  const filePath = path.join(uploadDir, safeName);
+app.delete("/api/upload/:public_id", async (req, res) => {
   try {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    const public_id = "event-app/" + req.params.public_id;
+    await cloudinary.uploader.destroy(public_id);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -169,5 +185,4 @@ app.delete("/api/upload/:filename", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`イベント販売記録アプリ起動 ポート:${PORT}`);
-  console.log(`アップロードフォルダ: ${uploadDir}`);
 });
