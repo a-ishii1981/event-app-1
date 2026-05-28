@@ -67,26 +67,6 @@ async function initDB() {
 
 initDB().catch((e) => console.error("DB初期化エラー:", e.message));
 
-// ─── アップロードフォルダの確保 ───────────────────────────────────
-const uploadDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-// ─── multer 設定 ──────────────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
-    cb(null, `${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
-  }
-});
-const upload = multer({
-  storage,
-  limits: { fileSize: 15 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("画像ファイルのみアップロード可能です"));
-  }
-});
 
 // ─── ミドルウェア ─────────────────────────────────────────────────
 app.use(express.json({ limit: "20mb" }));
@@ -103,7 +83,6 @@ app.use(express.static(path.join(__dirname, "public"), {
     }
   }
 }));
-app.use("/uploads", express.static(uploadDir));
 
 // ─── ストレージ API ───────────────────────────────────────────────
 app.get("/api/storage/:key", async (req, res) => {
