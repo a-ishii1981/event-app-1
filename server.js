@@ -5,6 +5,10 @@ const cloudinary = require("cloudinary").v2;
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const multer = require("multer");
 const { Pool } = require("pg");
+const session = require("express-session");
+const cookieParser = require("cookie-parser");
+const bcrypt = require("bcryptjs");
+
 // Cloudinary設定
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -23,6 +27,9 @@ const storage = new CloudinaryStorage({
 const upload = multer({ storage: storage });
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Render / Heroku などリバースプロキシ環境でsecure cookieを正しく動かす
+app.set("trust proxy", 1);
 
 // ─── PostgreSQL 接続（UTF-8 を明示）────────────────────────────────
 const pool = new Pool({
@@ -52,7 +59,6 @@ async function initDB() {
   `);
 
   if (tables.length > 0) {
-    // slug や id を使って確実に正しい日本語へ上書き
     await pool.query(`
       UPDATE workspaces SET name = 'バイト用'
       WHERE slug = 'baito' OR id = 1
@@ -69,7 +75,20 @@ initDB().catch((e) => console.error("DB初期化エラー:", e.message));
 
 
 // ─── ミドルウェア ─────────────────────────────────────────────────
+app.use(cookieParser());
 app.use(express.json({ limit: "20mb" }));
+
+app.use(session({
+  secret: process.env.SESSION_SECRET || "event-app-secret-key-change-in-production",
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax"
+    // maxAge はログイン時に rememberMe に応じて設定
+  }
+}));
 
 // 静的ファイルに charset=utf-8 を明示して配信
 app.use(express.static(path.join(__dirname, "public"), {
@@ -84,8 +103,65 @@ app.use(express.static(path.join(__dirname, "public"), {
   }
 }));
 
-// ─── ストレージ API ───────────────────────────────────────────────
-app.get("/api/storage/:key", async (req, res) => {
+// ─── 認証ミドルウェア ─────────────────────────────────────────────
+function requireAuth(req, res, next) {
+  if (req.session && req.session.authenticated) return next();
+  res.status(401).json({ error: "Unauthorized" });
+}
+
+// ─── 認証状態確認 ────────────────────────────────────────────────
+app.get("/api/auth-check", (req, res) => {
+  res.json({ authenticated: !!(req.session && req.session.authenticated) });
+});
+
+// ─── ログイン ─────────────────────────────────────────────────────
+app.post("/api/login", async (req, res) => {
+  const { id, password, rememberMe } = req.body;
+  const adminUser = process.env.ADMIN_USER;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+
+  if (!adminUser || !adminPassword) {
+    return res.status(500).json({ error: "認証設定が未構成です（ADMIN_USER / ADMIN_PASSWORD を環境変数に設定してください）" });
+  }
+
+  if (!id || !password) {
+    return res.status(401).json({ error: "IDとパスワードを入力してください" });
+  }
+
+  if (id !== adminUser) {
+    return res.status(401).json({ error: "IDまたはパスワードが正しくありません" });
+  }
+
+  // bcryptハッシュ or プレーンテキスト両対応
+  let passwordMatch;
+  if (adminPassword.startsWith("$2b$") || adminPassword.startsWith("$2a$")) {
+    passwordMatch = await bcrypt.compare(password, adminPassword);
+  } else {
+    passwordMatch = password === adminPassword;
+  }
+
+  if (!passwordMatch) {
+    return res.status(401).json({ error: "IDまたはパスワードが正しくありません" });
+  }
+
+  req.session.authenticated = true;
+  if (rememberMe) {
+    req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000; // 30日
+  }
+
+  res.json({ ok: true });
+});
+
+// ─── ログアウト ───────────────────────────────────────────────────
+app.post("/api/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie("connect.sid");
+    res.json({ ok: true });
+  });
+});
+
+// ─── ストレージ API（認証必須）───────────────────────────────────
+app.get("/api/storage/:key", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       "SELECT value FROM storage WHERE key = $1",
@@ -98,7 +174,7 @@ app.get("/api/storage/:key", async (req, res) => {
   }
 });
 
-app.post("/api/storage/:key", async (req, res) => {
+app.post("/api/storage/:key", requireAuth, async (req, res) => {
   try {
     await pool.query(
       "INSERT INTO storage (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
@@ -110,8 +186,8 @@ app.post("/api/storage/:key", async (req, res) => {
   }
 });
 
-// ─── DB 診断エンドポイント（文字化け確認用）──────────────────────
-app.get("/api/db-info", async (req, res) => {
+// ─── DB 診断エンドポイント（認証必須）────────────────────────────
+app.get("/api/db-info", requireAuth, async (req, res) => {
   try {
     const { rows: tables } = await pool.query(`
       SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename
@@ -121,13 +197,11 @@ app.get("/api/db-info", async (req, res) => {
     );
     const info = { client_encoding: encoding[0]?.client_encoding, tables: tables.map(r => r.tablename) };
 
-    // workspaces テーブルが存在すれば中身を返す
     if (info.tables.includes("workspaces")) {
       const { rows: ws } = await pool.query("SELECT * FROM workspaces ORDER BY id");
       info.workspaces = ws;
     }
 
-    // storage テーブルのキー一覧
     if (info.tables.includes("storage")) {
       const { rows: st } = await pool.query(
         "SELECT key, octet_length(value) AS bytes FROM storage ORDER BY key"
@@ -141,8 +215,8 @@ app.get("/api/db-info", async (req, res) => {
   }
 });
 
-// ─── ファイルアップロード API ─────────────────────────────────────
-app.post("/api/upload", upload.single("file"), (req, res) => {
+// ─── ファイルアップロード API（認証必須）─────────────────────────
+app.post("/api/upload", requireAuth, upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "ファイルがありません" });
   res.json({
     url: req.file.path,
@@ -151,8 +225,8 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   });
 });
 
-// ─── ファイル削除 API ─────────────────────────────────────────────
-app.delete("/api/upload/:public_id", async (req, res) => {
+// ─── ファイル削除 API（認証必須）─────────────────────────────────
+app.delete("/api/upload/:public_id", requireAuth, async (req, res) => {
   try {
     const public_id = "event-app/" + req.params.public_id;
     await cloudinary.uploader.destroy(public_id);
