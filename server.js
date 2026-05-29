@@ -6,6 +6,7 @@ const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const multer = require("multer");
 const { Pool } = require("pg");
 const session = require("express-session");
+const pgSession = require("connect-pg-simple")(session);
 const cookieParser = require("cookie-parser");
 const bcrypt = require("bcryptjs");
 
@@ -79,6 +80,10 @@ app.use(cookieParser());
 app.use(express.json({ limit: "20mb" }));
 
 app.use(session({
+  store: new pgSession({
+    pool,
+    createTableIfMissing: true
+  }),
   secret: process.env.SESSION_SECRET || "event-app-secret-key-change-in-production",
   resave: false,
   saveUninitialized: false,
